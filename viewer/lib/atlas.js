@@ -51,20 +51,33 @@ function readAnimation (basePath, name, img) {
 // u/v/su/sv extents, and an animated entry additionally carries its frame
 // count, frame time and per-frame UV step, since that step now varies per
 // texture rather than being uniform across the atlas.
+// Block entities the game draws with entity models (beds) take their texture
+// from entity/, so those sheets join the atlas too, named by their path
+// (entity/bed/red) for the hand-written models in modelsBuilder.
+const entityTextureDirs = ['entity/bed']
+
 function makeTextureAtlas (mcAssets) {
   const blocksTexturePath = path.join(mcAssets.directory, '/blocks')
   const textureFiles = fs.readdirSync(blocksTexturePath).filter(file => file.endsWith('.png'))
-  textureFiles.unshift('missing_texture.png')
+    .map(file => ({ dir: blocksTexturePath, file, name: file.split('.')[0] }))
+  textureFiles.unshift({ dir: blocksTexturePath, file: 'missing_texture.png', name: 'missing_texture' })
+  for (const sub of entityTextureDirs) {
+    const dir = path.join(mcAssets.directory, sub)
+    if (!fs.existsSync(dir)) continue
+    for (const file of fs.readdirSync(dir).filter(file => file.endsWith('.png'))) {
+      textureFiles.push({ dir, file, name: `${sub}/${file.split('.')[0]}` })
+    }
+  }
 
   // An animated texture reserves a vertical run of frames; a plain one that is
   // taller than wide contributes only its first frame, as model UV space maps
   // to a single frame either way.
-  const tiles = textureFiles.map(file => {
-    const img = loadImage(blocksTexturePath, file)
-    const animation = readAnimation(blocksTexturePath, file, img)
+  const tiles = textureFiles.map(({ dir, file, name }) => {
+    const img = loadImage(dir, file)
+    const animation = readAnimation(dir, file, img)
     const frames = animation ? animation.frames : [0]
     const frameHeight = animation ? animation.frameHeight : Math.min(img.width, img.height)
-    return { name: file.split('.')[0], img, animation, frames, frameHeight, w: img.width, h: frameHeight * frames.length }
+    return { name, img, animation, frames, frameHeight, w: img.width, h: frameHeight * frames.length }
   })
 
   // shelf-pack: sort by height, lay out rows, then round the atlas up to a power of two
