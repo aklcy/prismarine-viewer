@@ -109,7 +109,7 @@ Options:
 
 #### headless
 
-Render the bot view and stream it to a file or over TCP.
+Render the bot view and stream it to a file or over TCP, or (`output: null`) draw single frames on request.
 
 ```js
 const { headless } = require('prismarine-viewer')
@@ -121,6 +121,8 @@ Options:
 * `frames` number of frames to record, `-1` for infinite, default: `200`
 * `width` the width of a frame, default: `512`
 * `height` the height of a frame, default: `512`
+* `skins` local skin files by player name (`{ Galatea: '/path/Galatea.png' }`), as for the mineflayer mode
+* `output: null` streams nothing and returns `{ capture }`: each `capture()` renders where the bot looks and returns a PNG Buffer
 
 [example](https://github.com/PrismarineJS/prismarine-viewer/blob/master/examples/headless.js)
 
