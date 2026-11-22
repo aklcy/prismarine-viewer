@@ -19,26 +19,10 @@ function getEntityMesh (entity, scene, version) {
       const model = entity.name === 'player' && entity.skinModel === 'slim' ? 'player_slim' : entity.name
       const e = new Entity('1.16.4', model, scene, textures)
 
-      if (entity.username !== undefined) {
-        const canvas = createCanvas(500, 100)
-
-        const ctx = canvas.getContext('2d')
-        ctx.font = '50pt Arial'
-        ctx.fillStyle = '#000000'
-        ctx.textAlign = 'left'
-        ctx.textBaseline = 'top'
-
-        const txt = entity.username
-        ctx.fillText(txt, 100, 0)
-
-        const tex = new THREE.Texture(canvas)
-        tex.needsUpdate = true
-        const spriteMat = new THREE.SpriteMaterial({ map: tex })
-        const sprite = new THREE.Sprite(spriteMat)
-        sprite.position.y += entity.height + 0.6
-
-        e.mesh.add(sprite)
-      }
+      if (entity.username !== undefined) e.mesh.add(nameTag(entity.username, entity.height))
+      // Turned on its own to follow where the entity looks (see turnHead)
+      e.mesh.head = e.mesh.getObjectByName('head')
+      e.mesh.rightItem = e.mesh.getObjectByName('rightItem')
       const limbs = {}
       for (const name of ['leftArm', 'rightArm', 'leftLeg', 'rightLeg']) limbs[name] = e.mesh.getObjectByName(name)
       if (Object.values(limbs).every(Boolean)) {
@@ -52,6 +36,46 @@ function getEntityMesh (entity, scene, version) {
   }
 
   return missingModel(entity)
+}
+
+// Like vanilla's name tag: white text on a translucent dark plate, a quarter block tall,
+// as wide as the name, floating half a block over the head
+function nameTag (name, height) {
+  const font = '48px sans-serif'
+  const measure = createCanvas(1, 1).getContext('2d')
+  measure.font = font
+  const pad = 12
+  const canvas = createCanvas(Math.ceil(measure.measureText(name).width) + pad * 2, 64)
+  const ctx = canvas.getContext('2d')
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.25)'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.font = font
+  ctx.fillStyle = '#ffffff'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(name, pad, canvas.height / 2)
+
+  const tex = new THREE.CanvasTexture(canvas)
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }))
+  const h = 0.25
+  sprite.scale.set(h * canvas.width / canvas.height, h, 1)
+  sprite.position.y = height + 0.5
+  return sprite
+}
+
+// The main-hand item rides the rightItem bone (model space is in pixels, the item mesh in blocks)
+function holdItem (mesh, itemName, version) {
+  if (mesh.held) {
+    mesh.held.parent.remove(mesh.held)
+    dispose3(mesh.held)
+    mesh.held = null
+  }
+  if (!itemName) return
+  const item = getItemMesh(itemName, version, () => new THREE.Object3D())
+  item.scale.setScalar(16 * 1.1)
+  item.position.set(0, -2, -3)
+  item.rotation.set(Math.PI / 2, Math.PI / 2, 0)
+  mesh.rightItem.add(item)
+  mesh.held = item
 }
 
 function missingModel (entity) {
@@ -96,11 +120,31 @@ function animateWalk (mesh, ticks) {
     rightLeg.rotation.set(1.4137167, Math.PI / 10, -0.07853982)
   }
 
+  // Vanilla HumanoidModel.setupAttackAnimation over the 6 ticks of a swing
+  if (w.swing !== undefined) {
+    const f = Math.min(w.swing / 6, 1)
+    const f1 = 1 - Math.pow(1 - f, 4)
+    rightArm.rotation.x += Math.sin(f1 * Math.PI) * 1.2 + Math.sin(f * Math.PI) * 0.5
+    rightArm.rotation.z += Math.sin(f * Math.PI) * 0.4
+    w.swing += ticks
+    if (f >= 1) delete w.swing
+  }
+
   if (w.zombieArms) {
     const age = w.age
     leftArm.rotation.set(Math.PI / 2.25 + Math.sin(age * 0.067) * 0.05, 0.1, Math.cos(age * 0.09) * 0.05 + 0.05)
     rightArm.rotation.set(Math.PI / 2.25 - Math.sin(age * 0.067) * 0.05, -0.1, -(Math.cos(age * 0.09) * 0.05 + 0.05))
   }
+}
+
+// The head bone looks up and down by the pitch, and sideways by how far the head yaw is from
+// the body's (mobs turn their head apart from the body; for players both are the look direction)
+function turnHead (mesh, entity) {
+  if (entity.pitch !== undefined) mesh.head.rotation.x = entity.pitch
+  if (entity.headYaw !== undefined) mesh.headYaw = entity.headYaw
+  if (mesh.headYaw === undefined || mesh.yaw === undefined) return
+  const d = mesh.headYaw - mesh.yaw
+  mesh.head.rotation.y = Math.atan2(Math.sin(d), Math.cos(d))
 }
 
 class Entities {
@@ -144,7 +188,10 @@ class Entities {
 
     // A dropped item's stack arrives after its spawn and can change; its mesh is that stack's model.
     const known = this.entities[entity.id]
-    if (known && entity.itemName !== undefined && known.itemName !== entity.itemName) {
+    // So does a villager's texture, which comes with its biome and profession.
+    const changed = (entity.itemName !== undefined && known?.itemName !== entity.itemName) ||
+      (entity.skin !== undefined && known?.skin !== entity.skin)
+    if (known && changed) {
       this.scene.remove(known)
       dispose3(known)
       delete this.entities[entity.id]
@@ -154,6 +201,7 @@ class Entities {
       const mesh = getEntityMesh(entity, this.scene, this.version)
       if (!mesh) return
       mesh.itemName = entity.itemName
+      mesh.skin = entity.skin
       this.entities[entity.id] = mesh
       this.scene.add(mesh)
       if (entity.pos) mesh.position.set(entity.pos.x, entity.pos.y, entity.pos.z)
@@ -173,12 +221,16 @@ class Entities {
     if (e.walk) {
       if (entity.riding !== undefined) e.walk.riding = entity.riding
       if (entity.hurt) e.walk.speed = 1.5
+      if (entity.swing) e.walk.swing = 0
     }
-    if (entity.yaw) {
+    if (e.rightItem && entity.held !== undefined) holdItem(e, entity.held, this.version)
+    if (entity.yaw !== undefined) {
       const da = (entity.yaw - e.rotation.y) % (Math.PI * 2)
       const dy = 2 * da % (Math.PI * 2) - da
       new TWEEN.Tween(e.rotation).to({ y: e.rotation.y + dy }, 50).start()
+      e.yaw = entity.yaw
     }
+    if (e.head) turnHead(e, entity)
   }
 }
 

@@ -10,6 +10,23 @@ const { createCanvas } = safeRequire('canvas')
 const THREE = require('three')
 const path = require('path')
 
+// Textures made on request (lib/textures.js: local skins, layered villagers and horses, online
+// skins): the browser gets them from the mirror server at these same paths; headless hands
+// in a maker (setTextureMaker), path → Promise of a PNG Buffer or null
+const made = /^(skin|villager|horse|texture)\//
+let maker
+function setTextureMaker (fn) { maker = fn }
+
+async function nodeSource (texture) {
+  if (/^https?:\/\//.test(texture)) return texture
+  if (maker && made.test(texture)) {
+    const png = await maker(texture)
+    if (!png) throw new Error(`no texture ${texture}`)
+    return png
+  }
+  return path.resolve(__dirname, '../../public/' + texture)
+}
+
 const textureCache = {}
 // todo not ideal, export different functions for browser and node
 function loadTexture (texture, cb) {
@@ -21,8 +38,7 @@ function loadTexture (texture, cb) {
     cb(textureCache[texture])
   } else {
     // bundled textures are files under public/; player skins are http(s) URLs
-    const src = /^https?:\/\//.test(texture) ? texture : path.resolve(__dirname, '../../public/' + texture)
-    loadImage(src).then(image => {
+    nodeSource(texture).then(loadImage).then(image => {
       textureCache[texture] = new THREE.CanvasTexture(image)
       cb(textureCache[texture])
     }).catch(() => {})
@@ -39,7 +55,7 @@ function loadPixels (texture, cb) {
   if (pixelCache[texture]) {
     cb(pixelCache[texture])
   } else {
-    loadImage(path.resolve(__dirname, '../../public/' + texture)).then(image => {
+    nodeSource(texture).then(loadImage).then(image => {
       const canvas = createCanvas(image.width, image.height)
       canvas.getContext('2d').drawImage(image, 0, 0)
       pixelCache[texture] = canvas.getContext('2d').getImageData(0, 0, image.width, image.height)
@@ -55,4 +71,4 @@ function loadJSON (json, cb) {
   cb(require(path.resolve(__dirname, '../../public/' + json)))
 }
 
-module.exports = { loadTexture, loadPixels, loadJSON }
+module.exports = { loadTexture, loadPixels, loadJSON, setTextureMaker }

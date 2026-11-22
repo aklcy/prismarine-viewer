@@ -1,6 +1,7 @@
 /* global THREE */
 
-const entities = require('./entities.json')
+// entities.extra.json: newer mobs (extra/build.py), which would otherwise be magenta boxes
+const entities = { ...require('./entities.json'), ...require('./entities.extra.json') }
 const { loadTexture } = globalThis.isElectron ? require('../utils.electron.js') : require('../utils')
 let createCanvas
 try { ({ createCanvas } = require('canvas')) } catch {}
@@ -111,7 +112,10 @@ function addCube (attr, boneId, bone, cube, texWidth = 64, texHeight = 64) {
         cube.origin[2] + pos[2] * cube.size[2] + (pos[2] ? inflate : -inflate)
       )
 
+      // Newer models rotate a cube about its own pivot; older ones have none and turn about 0
+      if (cube.pivot) vecPos.sub(new THREE.Vector3(...cube.pivot))
       vecPos = vecPos.applyEuler(cubeRotation)
+      if (cube.pivot) vecPos.add(new THREE.Vector3(...cube.pivot))
       vecPos = vecPos.sub(bone.position)
       vecPos = vecPos.applyEuler(bone.rotation)
       vecPos = vecPos.add(bone.position)
@@ -277,6 +281,19 @@ function getMesh (texture, jsonModel, override) {
   return mesh
 }
 
+// Models whose textures are all variants (villager professions, horse colors…) have no
+// "default" one, so the mesh was skipped and the mob went invisible. Fall back to the plain
+// base texture, or else the first variant.
+const baseTexture = {
+  villager: 'textures/entity/villager/villager',
+  zombie_villager: 'textures/entity/zombie_villager/zombie_villager',
+  donkey: 'textures/entity/horse/donkey',
+  mule: 'textures/entity/horse/mule',
+  skeleton_horse: 'textures/entity/horse/horse_skeleton',
+  zombie_horse: 'textures/entity/horse/horse_zombie',
+  ocelot: 'textures/entity/cat/ocelot'
+}
+
 class Entity {
   constructor (version, type, scene, textures = {}) {
     const e = entities[type]
@@ -284,10 +301,16 @@ class Entity {
 
     this.mesh = new THREE.Object3D()
     for (const [name, jsonModel] of Object.entries(e.geometry)) {
-      const texture = e.textures[name]
+      let texture = e.textures[name]
+      if (!texture && name === 'default') texture = baseTexture[type] ?? Object.values(e.textures)[0]
       if (!texture && !textures[name]) continue
-      // console.log(JSON.stringify(jsonModel, null, 2))
-      const mesh = getMesh(texture && texture.replace('textures', 'textures/' + version) + '.png', jsonModel, textures[name])
+      const url = texture && texture.replace('textures', 'textures/' + version) + '.png'
+      // A player's skin is redrawn by prepareSkin over the base; any other mob's override is
+      // just its variant texture (horse color, cat breed…), used as is
+      const isPlayer = type === 'player' || type === 'player_slim'
+      const mesh = isPlayer || !textures[name]
+        ? getMesh(url, jsonModel, textures[name])
+        : getMesh(textures[name], jsonModel)
       /* const skeletonHelper = new THREE.SkeletonHelper( mesh )
       skeletonHelper.material.linewidth = 2
       scene.add( skeletonHelper ) */
