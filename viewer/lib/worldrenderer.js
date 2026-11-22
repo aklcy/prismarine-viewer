@@ -9,6 +9,27 @@ function mod (x, n) {
   return ((x % n) + n) % n
 }
 
+// Ticks the shader's time stays under; see the time uniform below.
+const TIME_LIMIT = 2 ** 22
+
+const gcd = (a, b) => b ? gcd(b, a % b) : a
+
+// Common period, in ticks, of every animated texture in the block states, or
+// TIME_LIMIT when it would not fit (the wrap then skips a frame once).
+function animationPeriod (blockStates) {
+  let period = 1
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return
+    if (node.frames > 1 && node.frametime) {
+      const run = node.frames * node.frametime
+      period = period / gcd(period, run) * run
+    }
+    for (const v of Object.values(node)) walk(v)
+  }
+  walk(blockStates)
+  return period <= TIME_LIMIT ? period : TIME_LIMIT
+}
+
 class WorldRenderer {
   constructor (scene, numWorkers = 4) {
     this.sectionMeshs = {}
@@ -33,11 +54,16 @@ class WorldRenderer {
     // in ticks. The step is per-vertex rather than a uniform because tiles keep
     // their native resolution, so frame height varies across the atlas.
     this.uniforms = { time: { value: 0 } }
+    // time is uploaded as float32, so it wraps before 2^22 ticks, where the
+    // spacing between floats is still 0.5 and the shader's +0.5 holds. It wraps
+    // at the common period of every animation (lcm of frames * frametime) so
+    // all of them are back on frame 0 and the reset is seamless.
+    this.timePeriod = TIME_LIMIT
     this.material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, this.uniforms)
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', 'attribute vec3 animation;\nuniform float time;\n#include <common>')
-        .replace('#include <uv_vertex>', '#include <uv_vertex>\n#ifdef USE_UV\nvUv.y += mod(floor(time / animation.y), animation.x) * animation.z;\n#endif')
+        .replace('#include <uv_vertex>', '#include <uv_vertex>\n#ifdef USE_UV\nvUv.y += floor(mod(floor(time / animation.y) + 0.5, animation.x)) * animation.z;\n#endif')
     }
 
     this.workers = []
@@ -137,6 +163,7 @@ class WorldRenderer {
       })
     }
     loadBlockStates().then((blockStates) => {
+      this.timePeriod = animationPeriod(blockStates)
       for (const worker of this.workers) {
         worker.postMessage({ type: 'blockStates', json: blockStates })
       }
@@ -144,7 +171,7 @@ class WorldRenderer {
   }
 
   update () {
-    this.uniforms.time.value = performance.now() / 50
+    this.uniforms.time.value = (performance.now() / 50) % this.timePeriod
   }
 
   addColumn (x, z, chunk) {
